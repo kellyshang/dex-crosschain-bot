@@ -38,6 +38,7 @@ const getOrCreateBridgeCell = async(
     recipientCkbAddress,
     ethTokenAddress,
     bridgeFee,
+    cellNum,
     retry = 0,
   ) => {
     try {
@@ -45,6 +46,7 @@ const getOrCreateBridgeCell = async(
         recipient_address: recipientCkbAddress,
         eth_token_address: ethTokenAddress,
         bridge_fee: bridgeFee,
+        cell_num: cellNum,
       })
       return res
     } catch (error) {
@@ -53,25 +55,25 @@ const getOrCreateBridgeCell = async(
       }
       // eslint-disable-next-line no-param-reassign
       retry += 1
-      return getOrCreateBridgeCell(recipientCkbAddress, ethTokenAddress, bridgeFee, retry)
+      return getOrCreateBridgeCell(recipientCkbAddress, ethTokenAddress, bridgeFee, cellNum, retry)
     }
   }
 
 const placeCrossChainOrder = async(
-  bridgeCells, udtDecimal,
+  index, bridgeCells, udtDecimal,
   marketPrice, orderAmount, isBid,
-  tokenAddress, 
-  bridgeFee, 
+  tokenAddress,
+  bridgeFee,
     ) => {
     let ethAddress = USER_ETH_ADDR
     const gasPrice = await web3.eth.getGasPrice()
-    const nonce = await web3.eth.getTransactionCount(ethAddress)
+    const nonce = await web3.eth.getTransactionCount(ethAddress, "pending") + index
     console.log("gasPrice, nonce: ", gasPrice, nonce)
 
     const sudtRelatedData = sudtExtraData(marketPrice, orderAmount, isBid, udtDecimal);
     const amount = BufferParser.toHexString(sudtRelatedData.payAmount)
     let recipientAddress = recipientCKBAddress;
-    let op = bridgeCells.shift();
+    let op = bridgeCells[index]
     let sudtData = sudtRelatedData.orderData;
 
     const postData = {
@@ -162,22 +164,60 @@ const relayEthToCKB =async(ethTXhash)=>{
     return res
 }
 
-let ethTokenAddress = '0x0000000000000000000000000000000000000000'
+const ETH_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000'
+const DAI_TOKEN_ADDRESS = '0xC4401D8D5F05B958e6f1b884560F649CdDfD9615'
+const USDT_TOKEN_ADDRESS ='0x1cf98d2a2f5b0BFc365EAb6Ae1913C275bE2618F'
+const USDC_TOKEN_ADDRESS = '0x1F0D2251f51b88FaFc90f06F7022FF8d82154B1a'
+let tokenAddress = ETH_TOKEN_ADDRESS
+let udtDecimal;
+let orderPrice;
+let orderAmount;
+switch(tokenAddress) {
+  case ETH_TOKEN_ADDRESS:
+    udtDecimal = 18n;
+    orderPrice = 12988.55;
+    orderAmount = 0.005;
+    break;
+  case DAI_TOKEN_ADDRESS:
+    udtDecimal = 18n;
+    orderPrice = 31.3;
+    orderAmount = 1.5;
+    break;
+  case USDT_TOKEN_ADDRESS:
+    udtDecimal = 6n;
+    orderPrice = 43.66;
+    orderAmount = 1;
+    break;
+  case USDC_TOKEN_ADDRESS:
+    udtDecimal = 6n;
+    orderPrice = 23.55;
+    orderAmount = 1;
+    break;
+  default:
+    tokenAddress = ETH_TOKEN_ADDRESS;
+    udtDecimal = 18n;
+    orderPrice = 12999.55;
+    orderAmount = 0.004;
+    break;
+}
+
 let bridgeFee = '0x0'
 let bridgeCells = [];
-let udtDecimal = 18n;
-let orderPrice = 12999.55;
-let orderAmount = 0.005;
+let raw;
+
 let isBid = false;
-getOrCreateBridgeCell(recipientCKBAddress,ethTokenAddress,bridgeFee).then(
-    r => {
-        console.log(r.data.outpoints)
-        bridgeCells=[...r.data.outpoints];
-        placeCrossChainOrder(bridgeCells, udtDecimal, orderPrice, orderAmount, isBid, ethTokenAddress, bridgeFee).then(
-            r => {
-                lockRsp = r.data;
-                const signedTX = signETHTX(lockRsp, signEthPrivateKey)
-                sendETHTXAndRelay(signedTX)
-        });
-    }
+getOrCreateBridgeCell(recipientCKBAddress,tokenAddress,bridgeFee, 49).then(
+  r => {
+      console.log(r.data.outpoints)
+      bridgeCells=[...r.data.outpoints];
+      for (let index = 0; index < bridgeCells.length; index++) {
+          placeCrossChainOrder(index, bridgeCells, udtDecimal, orderPrice, orderAmount, isBid, tokenAddress, bridgeFee).then(
+              r => {
+                  raw = JSON.stringify(r.data.raw);
+                  lockRsp = r.data;
+                  const signedTX = signETHTX(lockRsp, signEthPrivateKey)
+                  sendETHTXAndRelay(signedTX)
+          });
+      }
+  }
 )
