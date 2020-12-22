@@ -67,7 +67,7 @@ const placeCrossChainOrder = async(
     ) => {
     let ethAddress = USER_ETH_ADDR
     const gasPrice = await web3.eth.getGasPrice()
-    const nonce = await web3.eth.getTransactionCount(ethAddress, "pending") + index
+    const nonce = await web3.eth.getTransactionCount(ethAddress, "pending")
     console.log("gasPrice, nonce: ", gasPrice, nonce)
 
     const sudtRelatedData = sudtExtraData(marketPrice, orderAmount, isBid, udtDecimal);
@@ -131,44 +131,41 @@ const formatOrderData = (orderAmount, price, isBid) => {
     return dataHex;
 };
 
-const signETHTX = (ethTX, privateKey) => {
-    const tx = {...ethTX}
-    // console.log("ethTX: ", tx)
-    return web3.eth.accounts.signTransaction(tx, privateKey)
-}
-
-const sendETHTXAndRelay =(signTXPromise) => {
-    let rawTX;
-    let txHash;
-    signTXPromise.then(res => {  
-        rawTX = res.rawTransaction
-        txHash = res.transactionHash
-        const sentTx = web3.eth.sendSignedTransaction(rawTX);  
-        sentTx.on("receipt", receipt => {
-          console.log("send success！", receipt)
-        relayEthToCKB(txHash).then(
-            r => console.log("relayEthToCKB: ", r.data)
-        )
-        });
-        sentTx.on("error", err => {
-          console.log("send error：", err)
-        });
-      }).catch((err) => {
-        console.log("something error happend: ", err)
-      });
-}
-
 const relayEthToCKB =async(ethTXhash)=>{
     const postData = {eth_lock_tx_hash: ethTXhash}
+    console.log("relay to ckb postData: ",JSON.stringify(postData))
     const res = await axios.post(`${FORCE_BRIDGER_SERVER_URL}/relay_eth_to_ckb_proof`, postData)
     return res
+}
+
+const sendEthTX = async(index) => {
+  const txFromBridge = await placeCrossChainOrder(index, bridgeCells, udtDecimal, orderPrice, orderAmount, isBid, tokenAddress, bridgeFee)
+  const res = await web3.eth.accounts.signTransaction(txFromBridge.data, signEthPrivateKey)
+  const rawTX = res.rawTransaction
+  const txHash = res.transactionHash
+  console.log({rawTX, txHash})
+  const receipt = await web3.eth.sendSignedTransaction(rawTX)
+  console.log("send success!", receipt.transactionHash)
+  return txHash;
+}
+
+const sendAndRelayTX = async(bridgeCells) => {
+  let txHashList = [];
+  for (let index = 0; index < bridgeCells.length; index++) {
+    let txHash = await sendEthTX(index);
+    txHashList.push(txHash);
+  }
+  
+  for (let index = 0; index < txHashList.length; index++) {
+    relayEthToCKB(txHashList[index]);
+  }
 }
 
 const ETH_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000'
 const DAI_TOKEN_ADDRESS = '0xC4401D8D5F05B958e6f1b884560F649CdDfD9615'
 const USDT_TOKEN_ADDRESS ='0x1cf98d2a2f5b0BFc365EAb6Ae1913C275bE2618F'
 const USDC_TOKEN_ADDRESS = '0x1F0D2251f51b88FaFc90f06F7022FF8d82154B1a'
-let tokenAddress = ETH_TOKEN_ADDRESS
+let tokenAddress = DAI_TOKEN_ADDRESS
 let udtDecimal;
 let orderPrice;
 let orderAmount;
@@ -203,21 +200,12 @@ switch(tokenAddress) {
 
 let bridgeFee = '0x0'
 let bridgeCells = [];
-let raw;
 
 let isBid = false;
-getOrCreateBridgeCell(recipientCKBAddress,tokenAddress,bridgeFee, 49).then(
+getOrCreateBridgeCell(recipientCKBAddress,tokenAddress,bridgeFee, 2).then(
   r => {
       console.log(r.data.outpoints)
       bridgeCells=[...r.data.outpoints];
-      for (let index = 0; index < bridgeCells.length; index++) {
-          placeCrossChainOrder(index, bridgeCells, udtDecimal, orderPrice, orderAmount, isBid, tokenAddress, bridgeFee).then(
-              r => {
-                  raw = JSON.stringify(r.data.raw);
-                  lockRsp = r.data;
-                  const signedTX = signETHTX(lockRsp, signEthPrivateKey)
-                  sendETHTXAndRelay(signedTX)
-          });
-      }
+      sendAndRelayTX(bridgeCells);
   }
 )
