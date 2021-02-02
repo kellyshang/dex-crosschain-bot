@@ -24,6 +24,14 @@ const userPWEthLock = {
 const userPWEthLockHash = ckb.utils.scriptToHash(userPWEthLock);
 console.log("userPWEthLockHash: ", userPWEthLockHash); 
 
+const userPWETHAddr = ckb.utils.fullPayloadToAddress({
+  args: USER_ETH_ADDR,
+  type: PW_LOCK_HASHTYPE == "type" ? ckb.utils.AddressType.TypeCodeHash: ckb.utils.AddressType.DataCodeHash, 
+  prefix: ckb.utils.AddressPrefix.Testnet,
+  codeHash: PW_LOCK_CODEHASH,
+})
+console.log("userPWETHAddr: ", userPWETHAddr)
+
 const userEthCKBAddress = ckb.utils.fullPayloadToAddress({
   args: userPWEthLockHash,
   type: ORDERBOOK_LOCK_TYPE == "type" ? ckb.utils.AddressType.TypeCodeHash: ckb.utils.AddressType.DataCodeHash, 
@@ -31,8 +39,6 @@ const userEthCKBAddress = ckb.utils.fullPayloadToAddress({
   codeHash: ORDERBOOK_LOCK_CODEHASH,
 })
 console.log("userEthCKBAddress: ", userEthCKBAddress)
-
-let recipientCKBAddress = userEthCKBAddress
 
 const getOrCreateBridgeCell = async(
     recipientCkbAddress,
@@ -74,7 +80,12 @@ const placeCrossChainOrder = async(
     const amount = BufferParser.toHexString(sudtRelatedData.payAmount)
     let recipientAddress = recipientCKBAddress;
     let op = bridgeCells[index]
-    let sudtData = sudtRelatedData.orderData;
+    let sudtData;
+    if (isMix) { //crosschain + place order
+      sudtData = sudtRelatedData.orderData;
+    } else if(!isMix) { // only crosschain
+      sudtData = ""
+    }
 
     const postData = {
         sender: ethAddress,
@@ -135,6 +146,10 @@ const relayEthToCKB =async(ethTXhash)=>{
     const postData = {eth_lock_tx_hash: ethTXhash}
     console.log("relay to ckb postData: ",JSON.stringify(postData))
     const res = await axios.post(`${FORCE_BRIDGER_SERVER_URL}/relay_eth_to_ckb_proof`, postData)
+      .catch((error) => {
+        console.log("relay error: ", error.response.status, error.response.data);
+      })
+    console.log("relay send!", res.status, res.data)
     return res
 }
 
@@ -152,18 +167,17 @@ const sendEthTX = async(index) => {
 const sendAndRelayTX = async(bridgeCells) => {
   let txHashList = [];
   for (let index = 0; index < bridgeCells.length; index++) {
-    let txHash = await sendEthTX(index);
-    txHashList.push(txHash);
+    txHashList.push(await sendEthTX(index));
   }
   
   for (let index = 0; index < txHashList.length; index++) {
-    relayEthToCKB(txHashList[index]);
+    await relayEthToCKB(txHashList[index]);
   }
 }
 
 const ETH_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000'
 const DAI_TOKEN_ADDRESS = '0xC4401D8D5F05B958e6f1b884560F649CdDfD9615'
-const USDT_TOKEN_ADDRESS ='0x1cf98d2a2f5b0BFc365EAb6Ae1913C275bE2618F'
+const USDT_TOKEN_ADDRESS = '0x1cf98d2a2f5b0BFc365EAb6Ae1913C275bE2618F'
 const USDC_TOKEN_ADDRESS = '0x1F0D2251f51b88FaFc90f06F7022FF8d82154B1a'
 let tokenAddress = DAI_TOKEN_ADDRESS
 let udtDecimal;
@@ -202,7 +216,15 @@ let bridgeFee = '0x0'
 let bridgeCells = [];
 
 let isBid = false;
-getOrCreateBridgeCell(recipientCKBAddress,tokenAddress,bridgeFee, 2).then(
+const isMix = false; // true: crosschain + place order, eg. DAI->CKB; false: only crosschain, eg. DAI->ckDAI;
+
+let recipientCKBAddress;
+if(isMix) {
+  recipientCKBAddress = userEthCKBAddress;
+} else if (!isMix) {
+  recipientCKBAddress = userPWETHAddr;
+}
+getOrCreateBridgeCell(recipientCKBAddress,tokenAddress,bridgeFee, 10).then(
   r => {
       console.log(r.data.outpoints)
       bridgeCells=[...r.data.outpoints];
